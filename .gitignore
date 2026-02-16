@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+gmaps_profile/
+debug_*.png
+*.csv
+*.json
+.DS_Store
