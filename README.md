@@ -2,63 +2,66 @@
 
 A Playwright-based Python scraper for:
 
-- 🔎 Extracting place links from Google Maps search queries  
-- 📝 Scraping reviews from individual place pages  
-- 🔁 Batch scraping multiple locations automatically  
-- 💾 Exporting structured JSON and CSV outputs  
+- 🔎 Extracting Google Maps short links (`maps.app.goo.gl`)
+- 📝 Scraping reviews from a single place
+- 🔁 Batch scraping multiple places safely (chunked mode)
+- 💾 Appending results into master JSON & CSV files
 
 > Built for research and data collection purposes.
 
 ---
 
-## 📂 Project Structure
+# 📂 Project Structure
 
 ```
 Google-Maps-Scraper-Project/
 │
-├── google_maps_scraping.py       # Scrape reviews from a single place
-├── gmaps_get_place_links.py      # Get all place links from a search query
-├── batch_scrape_reviews.py       # Loop through all place links
-├── place_links.json              # Generated list of place URLs
-├── all_places_reviews.json       # Batch output (nested JSON)
-├── all_places_reviews.csv        # Batch output (flat CSV)
-├── gmaps_profile/                # Persistent browser session (ignored)
+├── gmaps_get_place_links.py      # Get short links from search query
+├── google_maps_scraping.py       # Scrape reviews from one place
+├── batch_scrape.py               # Batch scrape multiple links (append mode)
+│
+├── place_links.json              # Generated short links
+├── all_places_reviews.json       # Master JSON output (appended)
+├── all_places_reviews.csv        # Master CSV output (appended)
+│
+├── progress_state.json           # Resume progress tracking
+├── gmaps_profile_partX/          # Persistent browser sessions
+│
 └── README.md
 ```
 
 ---
 
-## 🚀 Features
+# 🚀 Features
 
-### 1️⃣ Extract Place Links From Search
+## 1️⃣ Extract Short Links from Search Query
 
 Input:
 
 ```
-"SPKLU Surabaya"
+SPKLU Surabaya
 ```
 
-Output:
+Output file:
+
+```
+place_links_spklu_surabaya.json
+```
+
+Example content:
 
 ```json
 [
-  "https://www.google.com/maps/place/...",
-  "https://www.google.com/maps/place/...",
-  ...
+  "https://maps.app.goo.gl/XXXX",
+  "https://maps.app.goo.gl/YYYY"
 ]
-```
-
-Saved to:
-
-```
-place_links.json
 ```
 
 ---
 
-### 2️⃣ Scrape Reviews From a Single Place
+## 2️⃣ Scrape Reviews from a Single Place
 
-Extracts:
+Extracted data:
 
 - Place name  
 - Address  
@@ -67,31 +70,30 @@ Extracts:
 - Timestamp  
 - Full review text  
 
-Exports:
+Outputs:
 
-- `reviews.json`  
-- `reviews.csv`  
+```
+reviews.json
+reviews.csv
+```
 
 ---
 
-### 3️⃣ Batch Scraping Multiple Places
+## 3️⃣ Batch Scraping (Append Mode)
 
-Automatically loops through:
-
-```
-place_links.json
-```
-
-And generates:
-
-- `all_places_reviews.json`  
-- `all_places_reviews.csv`  
+- Scrapes in chunks (default: 5 links per run)
+- Appends results into:
+  - `all_places_reviews.json`
+  - `all_places_reviews.csv`
+- Uses resume system (`progress_state.json`)
+- Uses fresh browser profile per batch
+- Adds delay to reduce throttling
 
 ---
 
-## ⚙️ Installation
+# ⚙️ Installation
 
-### 1️⃣ Install dependencies
+## 1️⃣ Install Dependencies
 
 ```bash
 pip install playwright pandas
@@ -100,33 +102,42 @@ playwright install chromium
 
 ---
 
-## 🔐 Login Requirement (Important)
+# 🔐 Login Requirement (IMPORTANT)
 
-Google Maps may show a **limited view** when not logged in.
+Google Maps often shows:
 
-This project uses a **persistent browser profile**:
+- Limited View
+- Infinite loading
+- Reviews stuck loading
+
+This project uses **persistent browser profiles**.
+
+Each batch run creates:
 
 ```
-gmaps_profile/
+gmaps_profile_part1/
+gmaps_profile_part2/
+gmaps_profile_part3/
+...
 ```
 
-### First Run (Login Once)
+### First Run (Login Required)
 
 ```bash
-python google_maps_scraping.py --url "YOUR_PLACE_URL" --headed
+python google_maps_scraping.py --url "PLACE_URL" --headed
 ```
 
-Login manually in the browser window.
+Login manually in the opened browser window.
 
-After that, your session is saved and reused automatically.
-
----
-
-## 🔎 Usage
+After login, the session will be reused during that batch run.
 
 ---
 
-### 🔹 Step 1 — Get All Place Links
+# 🔎 Usage Guide
+
+---
+
+## 🔹 Step 1 — Get Short Links
 
 ```bash
 python gmaps_get_place_links.py --q "SPKLU Surabaya"
@@ -140,39 +151,35 @@ place_links.json
 
 ---
 
-### 🔹 Step 2 — Scrape Single Place Reviews
+## 🔹 Step 2 — Scrape Single Place
 
 ```bash
 python google_maps_scraping.py --url "PLACE_URL" --headed
 ```
 
-Output:
-
-```
-reviews.json
-reviews.csv
-```
-
 ---
 
-### 🔹 Step 3 — Batch Scrape All Places
+## 🔹 Step 3 — Batch Scrape (Append to Master Files)
 
 ```bash
-python batch_scrape_reviews.py
+python batch_scrape.py --headed
 ```
 
-Output:
+This will:
 
-```
-all_places_reviews.json
-all_places_reviews.csv
-```
+- Scrape next 5 links
+- Append results into:
+  - `all_places_reviews.json`
+  - `all_places_reviews.csv`
+- Update `progress_state.json`
+
+Run the same command again to continue scraping the next 5 links.
 
 ---
 
-## 📊 Output Format
+# 📊 Output Format
 
-### JSON Structure
+## Master JSON
 
 ```json
 [
@@ -194,51 +201,51 @@ all_places_reviews.csv
 
 ---
 
-### CSV Structure
+## Master CSV
 
 | place_url | place_name | place_location | user_name | rating | timestamp | text_review |
 |-----------|------------|----------------|-----------|--------|-----------|-------------|
 
 ---
 
-## 🧠 Technical Details
+# 🧠 Technical Notes
 
-- Uses **Playwright (Chromium)**
+- Uses Playwright (Chromium)
 - Handles:
   - Consent popups
-  - Login overlay
+  - Login overlays
   - Infinite scroll
-  - Dynamic content loading
-- Uses persistent browser session to avoid limited view
-- Scroll-until-stagnant logic for maximum review extraction
+  - Dynamic review loading
+- Uses scroll-until-stagnant strategy
+- Uses throttling delay to reduce blocking
+- Uses resume system for batch scraping
 
 ---
 
-## ⚠️ Notes & Limitations
+# ⚠️ Limitations
 
-- Google Maps is dynamic and may change DOM structure.
-- Not all reviews may load due to throttling or UI limits.
+- Google Maps DOM structure may change.
 - Excessive scraping may trigger rate limiting.
-- Intended for research and educational purposes.
+- Login session can degrade after heavy scraping.
+- Recommended chunk size: 5 links per run.
 
 ---
 
-## 🛠 Recommended Improvements (Future Work)
+# 🛠 Recommended Workflow
 
-- Resume system (continue from last scraped link)
-- Proxy rotation support
-- Parallel scraping
-- Structured logging
-- Docker container support
-- CLI argument enhancements
+1. Extract links  
+2. Scrape in small chunks  
+3. Wait between runs  
+4. Use master output as final dataset  
 
 ---
 
-## 📜 License
+# 📜 Disclaimer
 
-This project is for research and educational use.
+This project is intended for research and educational purposes only.
 
 Please ensure compliance with:
 
-- Google Terms of Service
-- Local data regulations
+- Google Terms of Service  
+- Local data regulations  
+- Ethical scraping practices

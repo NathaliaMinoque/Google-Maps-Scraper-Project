@@ -141,11 +141,22 @@ async def _get_place_identity(page) -> Dict[str, str]:
     place_name = ""
     for sel in ["h1.DUwDvf", "h1[class*='DUwDvf']", "h1"]:
         try:
-            el = page.locator(sel).first
-            if await el.count() > 0:
-                place_name = _clean_text(await el.inner_text())
+                        # Prefer visible title if available
+            vis = page.locator("h1.DUwDvf:visible").first
+            if await vis.count() > 0:
+                place_name = _clean_text(await vis.inner_text())
+            else:
+                # fallback to any attached title
+                el = page.locator("h1.DUwDvf").first
+                if await el.count() > 0:
+                    place_name = _clean_text(await el.inner_text())
                 if place_name:
                     break
+                        # If title is still not visible after a short time, refresh once
+            if await page.locator("h1.DUwDvf:visible").count() == 0:
+                print("⚠ Title still hidden, refreshing once...")
+                await page.reload(wait_until="domcontentloaded", timeout=60000)
+                await page.wait_for_timeout(1500)
         except Exception:
             pass
 
@@ -223,6 +234,52 @@ async def _reviews_visible(page) -> bool:
         return True
 
     return False
+
+async def _wait_for_review_cards_or_timeout(page, timeout_ms: int = 90000) -> bool:
+    """
+    Wait until review cards appear.
+    Returns True if cards appear, False if not.
+    """
+    cards = page.locator("div.jftiEf, div[data-review-id]")
+    start = asyncio.get_event_loop().time()
+    deadline = start + timeout_ms / 1000
+
+    while asyncio.get_event_loop().time() < deadline:
+        await _close_login_popup(page)
+
+        # If cards exist, we are good
+        if await cards.count() > 0:
+            return True
+
+        # Sometimes the feed container exists earlier than cards
+        # but cards still not rendered yet. Just keep waiting.
+        await page.wait_for_timeout(800)
+
+    return False
+
+async def _refresh_if_reviews_stuck(page, place_url: str, attempts: int = 2) -> None:
+    """
+    If reviews panel is open but cards never appear, refresh and retry.
+    """
+    for i in range(attempts):
+        ok = await _wait_for_review_cards_or_timeout(page, timeout_ms=45000)
+        if ok:
+            return
+
+        print(f"⚠ Reviews still loading / no cards. Refreshing... (attempt {i+1}/{attempts})")
+        await page.screenshot(path=f"debug_stuck_before_refresh_{i+1}.png", full_page=True)
+
+        await page.goto(place_url, wait_until="domcontentloaded", timeout=60000)
+        await page.wait_for_timeout(2000)
+        await _maybe_accept_consent(page)
+        await _close_login_popup(page)
+
+        # reopen Reviews
+        await _open_reviews_panel(page)
+        await page.wait_for_timeout(1500)
+
+    await page.screenshot(path="debug_stuck_after_refresh.png", full_page=True)
+    raise RuntimeError("Reviews stuck loading: cards never appeared. Saved debug_stuck_after_refresh.png.")
 
 async def _scroll_reviews_until_done(page, pause_ms: int = 900, max_rounds: int = 200) -> None:
     # Verify we're really in Reviews
@@ -362,11 +419,12 @@ async def scrape_google_maps_reviews(
     max_reviews: int = 200,
     headless: bool = True,
     max_scrolls: int = 40,
+    profile_dir: str = "gmaps_profile"
 ) -> PlaceReviews:
     async with async_playwright() as p:
         # Persistent context keeps login cookies
         context = await p.chromium.launch_persistent_context(
-            user_data_dir="gmaps_profile",
+            user_data_dir=profile_dir,
             headless=headless,
             slow_mo=0 if headless else 100,
             viewport={"width": 1280, "height": 900},
@@ -394,12 +452,20 @@ async def scrape_google_maps_reviews(
             # (You can also pause longer here if you want.)
             # await page.wait_for_timeout(60000)
 
-            await page.wait_for_selector("h1.DUwDvf, h1[class*='DUwDvf'], h1", timeout=60000)
+            # await page.wait_for_selector("h1.DUwDvf, h1[class*='DUwDvf'], h1", timeout=60000)
+            title = page.locator("h1.DUwDvf").first
+            await title.wait_for(state="attached", timeout=60000)
+            await page.wait_for_timeout(1200)
 
             identity = await _get_place_identity(page)
 
             await _open_reviews_panel(page)
             await _close_login_popup(page)
+
+            # NEW: if reviews feed is stuck loading, refresh then retry
+            await _refresh_if_reviews_stuck(page, place_url, attempts=2)
+
+            await _scroll_reviews_until_done(page, pause_ms=900, max_rounds=250)
 
             # Debug right here (important)
             print("DEBUG cards jftiEf:", await page.locator("div.jftiEf").count())

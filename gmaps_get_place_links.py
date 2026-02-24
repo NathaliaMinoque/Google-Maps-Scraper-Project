@@ -1,19 +1,18 @@
 import asyncio
 import json
 import re
+import random
 from urllib.parse import quote_plus
-from typing import List, Set
+from typing import List, Set, Optional
 
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 
 def build_maps_search_url(query: str) -> str:
-    # Google Maps search URL
     return f"https://www.google.com/maps/search/{quote_plus(query)}"
 
 
 async def maybe_accept_consent(page) -> None:
-    # Best-effort consent handling
     patterns = [
         re.compile(r"accept", re.I),
         re.compile(r"i agree", re.I),
@@ -32,14 +31,10 @@ async def maybe_accept_consent(page) -> None:
 
 
 async def scroll_results_panel(page, max_rounds: int = 80, pause_ms: int = 800) -> None:
-    """
-    Scrolls the LEFT results list. Google Maps results are in a scrollable div.
-    """
-    # Common scroll containers for search results list (Maps changes often)
     candidates = [
-        "div[role='feed']",                          # often used for lists
-        "div.m6QErb.DxyBCb.kA9KIf.dS8AEf",           # common scroll panel
-        "div.m6QErb.DxyBCb.kA9KIf",                  # fallback panel
+        "div[role='feed']",
+        "div.m6QErb.DxyBCb.kA9KIf.dS8AEf",
+        "div.m6QErb.DxyBCb.kA9KIf",
     ]
 
     panel = None
@@ -50,14 +45,12 @@ async def scroll_results_panel(page, max_rounds: int = 80, pause_ms: int = 800) 
             break
 
     if panel is None:
-        # If we can't find a scroll panel, just return.
         return
 
     last_height = None
     stagnant = 0
 
     for _ in range(max_rounds):
-        # Get current scroll height
         try:
             height = await panel.evaluate("el => el.scrollHeight")
         except Exception:
@@ -69,15 +62,12 @@ async def scroll_results_panel(page, max_rounds: int = 80, pause_ms: int = 800) 
             stagnant = 0
             last_height = height
 
-        # Stop if list no longer grows
         if stagnant >= 6:
             break
 
-        # Scroll down
         try:
             await panel.evaluate("el => el.scrollBy(0, el.scrollHeight)")
         except Exception:
-            # fallback: mouse wheel
             try:
                 await page.mouse.wheel(0, 2500)
             except Exception:
@@ -86,37 +76,103 @@ async def scroll_results_panel(page, max_rounds: int = 80, pause_ms: int = 800) 
         await page.wait_for_timeout(pause_ms)
 
 
-async def extract_place_links(page) -> List[str]:
+async def get_maps_app_short_link(context, place_url: str) -> Optional[str]:
     """
-    Extracts unique place links from the current DOM.
+    Open a place page, open Share dialog, and extract the 'Link to share'
+    which is usually a maps.app.goo.gl short URL.
+    """
+    page = await context.new_page()
+    page.set_default_timeout(60000)
 
-    We look for anchors that contain "/maps/place/".
-    """
+    try:
+        await page.goto(place_url, wait_until="domcontentloaded", timeout=60000)
+        await page.wait_for_timeout(1500)
+        await maybe_accept_consent(page)
+
+        # Click Share / Bagikan
+        share_btn = page.get_by_role("button", name=re.compile(r"share|bagikan", re.I))
+        if await share_btn.count() == 0:
+            share_btn = page.locator("[aria-label*='Share' i], [aria-label*='Bagikan' i]")
+
+        if await share_btn.count() == 0:
+            return None
+
+        await share_btn.first.click(timeout=15000)
+        await page.wait_for_timeout(1200)
+
+        # Look for the input containing the short link
+        inputs = page.locator("input[type='text']")
+        n = await inputs.count()
+        for i in range(n):
+            try:
+                val = await inputs.nth(i).input_value()
+                if val and "maps.app.goo.gl" in val:
+                    return val.strip()
+            except Exception:
+                pass
+
+        # Rare fallback: link text node
+        text_link = page.locator("text=/https:\\/\\/maps\\.app\\.goo\\.gl\\//")
+        if await text_link.count() > 0:
+            txt = (await text_link.first.inner_text()).strip()
+            if "maps.app.goo.gl" in txt:
+                return txt
+
+        return None
+
+    finally:
+        await page.close()
+
+
+async def extract_place_links(page) -> Set[str]:
     anchors = page.locator("a[href*='/maps/place/']")
     n = await anchors.count()
 
-    links: Set[str] = set()
+    raw_links: Set[str] = set()
     for i in range(n):
         href = await anchors.nth(i).get_attribute("href")
         if not href:
             continue
-
-        # Clean & normalize: keep only the base place URL up to '?' (optional)
-        # (some hrefs are relative, some absolute)
         if href.startswith("/"):
             href = "https://www.google.com" + href
-
-        # Keep only valid place URLs
         if "/maps/place/" in href:
-            # remove very long tracking query parts if you want cleaner links
-            # but keep enough to remain valid
-            href_clean = href.split("&")[0]
-            links.add(href_clean)
+            raw_links.add(href.split("&")[0])
 
-    return sorted(links)
+    return raw_links
 
+async def convert_links_to_short(context, raw_links: List[str]) -> List[str]:
+    clean_short_links: List[str] = []
+
+    for idx, link in enumerate(raw_links, start=1):
+        print(f"Converting {idx}/{len(raw_links)} (long): {link}")
+
+        short_link = await get_maps_app_short_link(context, link)
+        if short_link:
+            print(f"  -> short: {short_link}")
+            clean_short_links.append(short_link)
+        else:
+            print("  -> short: FAILED (keeping long)")
+            clean_short_links.append(link)
+
+        await asyncio.sleep(random.uniform(1.5, 3.5))
+
+    # unique + stable order
+    seen = set()
+    out = []
+    for x in clean_short_links:
+        if x not in seen:
+            out.append(x)
+            seen.add(x)
+    return out
 
 async def get_all_place_links(query: str, headless: bool = False) -> List[str]:
+    """
+    Main pipeline:
+    - open maps search
+    - scroll results
+    - extract place links
+    - convert each to maps.app.goo.gl share link
+    """
     url = build_maps_search_url(query)
 
     async with async_playwright() as p:
@@ -141,31 +197,37 @@ async def get_all_place_links(query: str, headless: bool = False) -> List[str]:
             await page.wait_for_timeout(1500)
             await maybe_accept_consent(page)
 
-            # Wait until results start appearing
-            # If the query yields a single place directly, Maps might show place page.
-            await page.wait_for_timeout(1500)
+            all_raw_links: Set[str] = set()
 
-            # Scroll results list to load more
-            all_links: Set[str] = set()
+            for round_no in range(1, 7):
+                print(f"\n--- Scroll Round {round_no} ---")
 
-            for _ in range(6):  # multiple passes: scroll + collect
                 await scroll_results_panel(page, max_rounds=40, pause_ms=800)
-                links = await extract_place_links(page)
-                before = len(all_links)
-                all_links.update(links)
-                after = len(all_links)
 
-                # If no new links were found in a full pass, we’re likely done
+                raw_links = await extract_place_links(page)
+
+                before = len(all_raw_links)
+                all_raw_links.update(raw_links)
+                after = len(all_raw_links)
+
+                print(f"New long links this round: {after - before}")
+                print(f"Total unique long links so far: {after}")
+
                 if after == before:
+                    print("No new links found. Stopping scroll.")
                     break
 
-            return sorted(all_links)
+            # Convert once at the end
+            raw_list = sorted(all_raw_links)
+            print(f"\nTotal long links collected: {len(raw_list)}")
+            print("Now converting to maps.app.goo.gl links...\n")
+
+            short_links = await convert_links_to_short(context, raw_list)
+            return short_links
 
         except PlaywrightTimeoutError as e:
             await page.screenshot(path="debug_search_timeout.png", full_page=True)
-            raise RuntimeError(
-                f"Timeout. Saved debug_search_timeout.png. Details: {e}"
-            ) from e
+            raise RuntimeError(f"Timeout. Saved debug_search_timeout.png. Details: {e}") from e
 
         finally:
             await context.close()
@@ -176,6 +238,16 @@ def save_links(links: List[str], out_json: str = "place_links.json") -> None:
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(links, f, ensure_ascii=False, indent=2)
 
+def make_safe_filename(text: str) -> str:
+    """
+    Convert search query into safe filename:
+    - replace spaces with _
+    - remove special characters
+    - lowercase (optional)
+    """
+    text = text.strip().replace(" ", "_")
+    text = re.sub(r"[^a-zA-Z0-9_]+", "", text)
+    return text.lower()
 
 if __name__ == "__main__":
     import argparse
@@ -191,5 +263,9 @@ if __name__ == "__main__":
     print(f"Found links: {len(links)}")
     print(links[:10], "..." if len(links) > 10 else "")
 
-    save_links(links, out_json="place_links.json")
-    print("Saved: place_links.json")
+    safe_query = make_safe_filename(args.q)
+    output_file = f"place_links_{safe_query}.json"
+
+    save_links(links, out_json=output_file)
+
+    print(f"Saved: {output_file}")
