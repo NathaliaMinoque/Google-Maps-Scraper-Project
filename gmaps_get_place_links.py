@@ -8,9 +8,12 @@ from typing import List, Set, Optional
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 
+# def build_maps_search_url(query: str) -> str:
+#     return f"https://www.google.com/maps/search/{quote_plus(query)}"
 def build_maps_search_url(query: str) -> str:
-    return f"https://www.google.com/maps/search/{quote_plus(query)}"
-
+    # Jakarta center (Monas) + zoom
+    lat, lng, zoom = -6.175392, 106.827153, 12
+    return f"https://www.google.com/maps/search/{quote_plus(query)}/@{lat},{lng},{zoom}z"
 
 async def maybe_accept_consent(page) -> None:
     patterns = [
@@ -253,7 +256,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--q", required=True, help='Search query, e.g. "SPKLU Surabaya"')
+    parser.add_argument("--q", required=True, help='Search query, e.g. "SPKLU Jakarta"')
     parser.add_argument("--headless", action="store_true", help="Run headless")
     args = parser.parse_args()
 

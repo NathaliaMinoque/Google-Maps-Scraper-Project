@@ -8,7 +8,7 @@ import pandas as pd
 
 from google_maps_scraping import scrape_google_maps_reviews
 
-INPUT_FILE = "place_links.json"
+INPUT_FILE = "place_links_spklu_jakarta.json"
 STATE_FILE = "progress_state.json"
 
 MASTER_JSON = "all_places_reviews.json"
@@ -203,7 +203,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--chunk_size", type=int, default=5)
+    parser.add_argument("--chunk_size", type=int, default=10)
     parser.add_argument("--headed", action="store_true")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--max_reviews", type=int, default=5000)
